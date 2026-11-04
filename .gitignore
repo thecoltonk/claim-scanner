@@ -1,0 +1,16 @@
+# your data: never commit (patient info, keys, practice settings)
+config.py
+claims.db*
+scans/
+certs/
+token.txt
+accuracy.jsonl
+names.zip
+names.json
+*.log
+*.log.old
+trocr_crops/
+# build
+__pycache__/
+build/
+dist/

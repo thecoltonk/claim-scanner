@@ -1,0 +1,52 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: pyinstaller --noconfirm ClaimScanner.spec
+      - name: Smoke test (in a copy, so no test data/keys end up in the zip)
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "smoke"
+          Copy-Item -Recurse dist/ClaimScanner $t
+          Start-Process (Join-Path $t "ClaimScanner.exe") -ArgumentList "--no-browser"
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep 2
+            try { $r = Invoke-RestMethod http://127.0.0.1:5000/api/home; if ($r.rows[0][1] -like "ready*") { $ok = $true; break } } catch {}
+          }
+          Get-Content (Join-Path $t "claim-scanner.log") -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "the reader didn't load" }
+          Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/quit | Out-Null
+      - name: Zip
+        shell: pwsh
+        run: |
+          Copy-Item eclaim-prefill.user.js, README.md, LICENSE dist/ClaimScanner/
+          Compress-Archive dist/ClaimScanner ClaimScanner-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaimScanner-windows
+          path: ClaimScanner-windows.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ClaimScanner-windows.zip

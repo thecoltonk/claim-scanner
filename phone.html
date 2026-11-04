@@ -1,0 +1,406 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Scan Claims</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+  video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+  #guide{position:fixed;border:4px solid rgba(255,255,255,.55);border-radius:10px;transition:border-color .1s;box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
+  #guide.locking{border-color:#facc15}
+  #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
+
+  #top{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 10px) 16px 18px;background:linear-gradient(#000c,#0000);text-align:center}
+  #title{font-size:26px;font-weight:700}
+  #hint{font-size:16px;opacity:.85;margin-top:2px;min-height:1.2em}
+
+  /* full-screen result screens */
+  #stage{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:28px;text-align:center}
+  #stage.on{display:flex}
+  #stage.reading{background:rgba(15,23,42,.9)}
+  #stage.good{background:#15803d}
+  #stage.bad{background:#b91c1c}
+  #big{font-size:110px;line-height:1;font-weight:800}
+  #stage.checking{justify-content:flex-start;overflow-y:auto;-webkit-overflow-scrolling:touch;gap:10px;
+    padding:calc(env(safe-area-inset-top) + 52px) 16px calc(env(safe-area-inset-bottom) + 16px)}
+  #stage.checking #big{display:none}
+  #stage.checking #msg{font-size:20px;padding-right:110px;text-align:left;align-self:stretch}
+  #stage.checking #sub{font-size:15px;align-self:stretch;text-align:left;margin-top:-8px}
+  #stage.checking #list{max-height:none;overflow:visible;flex-shrink:0}
+  #stage.checking #primary{position:sticky;bottom:0;flex-shrink:0;box-shadow:0 -6px 20px rgba(0,0,0,.25)}
+  body.staged #bar{display:none}
+  #msg{font-size:26px;font-weight:700}
+  #sub{font-size:17px;opacity:.92;max-width:330px;line-height:1.35}
+  #primary{font:inherit;font-size:22px;font-weight:700;border:0;border-radius:16px;padding:20px 0;width:min(320px,85vw);background:#fff;margin-top:10px}
+  #stage.good #primary{color:#15803d}
+  #stage.bad #primary{color:#b91c1c}
+  #secondary{font:inherit;font-size:16px;font-weight:600;border:0;border-radius:12px;padding:12px 0;width:min(320px,85vw);background:rgba(255,255,255,.18);color:#fff}
+  .spin{width:64px;height:64px;border:6px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+
+  #bar{position:fixed;bottom:0;left:0;right:0;padding:16px 20px calc(env(safe-area-inset-bottom) + 16px);display:flex;align-items:center;justify-content:space-between;background:linear-gradient(#0000,#000c)}
+  #count{font-size:15px;width:96px}
+  #snap{width:74px;height:74px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.25)}
+  #snap:active{background:rgba(255,255,255,.6)}
+  #auto{font:inherit;font-size:15px;color:#fff;background:rgba(255,255,255,.18);border:0;border-radius:18px;padding:8px 12px;width:96px}
+  #chk{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:12px;z-index:3;font:600 14px -apple-system,system-ui;color:#fff;background:rgba(255,255,255,.18);border:0;border-radius:16px;padding:7px 11px}
+  #chk.on{background:#facc15;color:#111}
+  #list{display:none;width:min(360px,94vw);flex-direction:column;gap:6px;margin-top:4px;max-height:58vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #list.on{display:flex}
+  .row{background:#fff;color:#111;border-radius:12px;padding:10px 12px;font:15px -apple-system,system-ui;text-align:left;border-left:5px solid #fff}
+  .row .head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .row b{font-weight:700;font-size:17px}
+  .row span{color:#555;font-size:13px}
+  .row.warn{border-left-color:#f59e0b}.row.missing{border-left-color:#dc2626}
+  .row.fixed{background:#dbeafe;border-left-color:#2563eb}.row.fixed span::after{content:" · fixed";color:#1d4ed8;font-weight:700}
+  .row.wrong{background:#fee2e2;border-left-color:#dc2626}.row.wrong span::after{content:" · flagged";color:#b91c1c;font-weight:700}
+  .ed{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font:600 16px -apple-system,system-ui;border:1.5px solid #cbd5e1;background:#f8fafc;color:#111;border-radius:10px;padding:10px 12px;min-width:64px}
+  .chip.on{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+  .ed .in{display:flex;gap:6px}
+  .ed input{flex:1;font:600 20px -apple-system,system-ui;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;min-width:0;color:#111;background:#fff}
+  .ed .use{font:700 16px -apple-system,system-ui;background:#1d4ed8;color:#fff;border:0;border-radius:10px;padding:0 16px}
+  .ed .flag{align-self:flex-start;font:14px -apple-system,system-ui;color:#b91c1c;background:none;border:0;padding:2px 0}
+  .ed .hint{font-size:13px;color:#64748b}
+  #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 110px);transform:translateX(-50%);background:#111;color:#fff;padding:10px 14px;border-radius:10px;font:15px -apple-system,system-ui;opacity:0;transition:opacity .2s;z-index:9;pointer-events:none}
+  #dbg{position:fixed;left:10px;bottom:120px;font:12px ui-monospace,monospace;color:#fffa;display:none;white-space:pre}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;padding:32px;text-align:center;gap:16px;background:#0f172a;z-index:9}
+</style>
+</head><body>
+<video id="v" playsinline muted autoplay></video>
+<div id="guide"></div><div id="flash"></div>
+<div id="top"><div id="title">Claim 1</div><div id="hint">Tap once to turn on sounds, then hold up the form</div></div>
+<button id="chk">Confirm: off</button>
+<div id="stage">
+  <div id="big"></div><div id="msg"></div><div id="sub"></div>
+  <div id="list"></div>
+  <button id="primary"></button>
+  <button id="secondary"></button>
+</div>
+<div id="toast"></div>
+<div id="dbg"></div>
+<div id="bar">
+  <div id="count">0 done</div>
+  <button id="snap" aria-label="Take photo"></button>
+  <button id="auto">Auto: on</button>
+</div>
+<div id="err"><div id="errmsg"></div></div>
+
+<script>
+// ---- Auto-capture tuning (tap the claim number at the top to see live numbers) ----
+const STILL = 9;           // frame-to-frame change below this = held still
+const STILL_TICKS = 3;     // ~0.3s held still -> snap
+const PAPER_MIN = 0.22;    // share of the frame that looks like paper
+const TICK = 100;          // ms between checks
+const W = 200;             // analysis width (small = fast)
+
+const $ = id => document.getElementById(id);
+const v = $('v'), guide = $('guide'), dbg = $('dbg');
+const small = document.createElement('canvas'), sctx = small.getContext('2d', {willReadFrequently: true});
+const big = document.createElement('canvas'), bctx = big.getContext('2d');
+
+// mode: scan (looking) -> reading (laptop reads it) -> good (green) | bad (red)
+let mode = 'scan', claimNo = 1, done = 0, retakeOf = null, auto = true;
+let armed = true, prev = null, still = 0;
+
+// ---- sounds + haptics ----
+let ac = null;
+const AC = window.AudioContext || window.webkitAudioContext;
+const unlock = e => { if (!e.isTrusted || !AC) return; if (!ac) ac = new AC(); if (ac.state !== 'running') ac.resume(); };
+document.addEventListener('touchstart', unlock); document.addEventListener('click', unlock);
+function tone(f, at, dur, vol = .25) {
+  if (!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime + at;
+  o.frequency.value = f; o.connect(g); g.connect(ac.destination);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur); o.start(t); o.stop(t + dur);
+}
+const hapticSwitch = (() => {
+  const l = document.createElement('label'), i = document.createElement('input');
+  i.type = 'checkbox'; i.setAttribute('switch', '');
+  l.style.cssText = 'position:fixed;left:-100px;top:0;opacity:0;pointer-events:none';
+  l.appendChild(i); document.body.appendChild(l); return l;
+})();
+const haptic = (n = 1) => navigator.vibrate ? navigator.vibrate(n === 1 ? 40 : [70, 90, 70])
+  : [...Array(n)].forEach((_, k) => setTimeout(() => hapticSwitch.click(), k * 160));
+const snapSound = () => { tone(1400, 0, .06); haptic(1); };
+const goodSound = () => { tone(880, 0, .09); tone(1320, .1, .12); haptic(1); };
+const badSound  = () => { tone(220, 0, .18, .4); tone(220, .25, .18, .4); haptic(3); };
+
+// ---- screens ----
+function header(t, h) { $('title').textContent = t; $('hint').textContent = h; }
+function screen(kind, big, msg, sub, primary, secondary) {
+  $('stage').className = kind ? 'on ' + kind : '';
+  document.body.classList.toggle('staged', !!kind);   // hide the shutter bar so it can't cover the buttons
+  $('big').innerHTML = kind === 'reading' ? '<div class="spin"></div>' : (big || '');
+  $('msg').textContent = msg || ''; $('sub').textContent = sub || '';
+  for (const [id, b] of [['primary', primary], ['secondary', secondary]]) {
+    $(id).style.display = b ? '' : 'none';
+    if (b) { $(id).textContent = b[0]; $(id).onclick = b[1]; }
+  }
+}
+async function arm() {
+  armed = false; still = 0;
+  await camOn();
+  setTimeout(() => { if (mode === 'scan') armed = true; }, 500);
+}
+function scanNext() {                      // camera on for the next claim
+  mode = 'scan'; retakeOf = null; screen('');
+  header(`Claim ${claimNo}`, 'Hold the form inside the frame');
+  arm();
+}
+function retake(id) {                       // same form again; the new photo replaces the bad one
+  mode = 'scan'; retakeOf = id; screen('');
+  header(`Claim ${claimNo} · retake`, 'Hold the SAME form up again');
+  arm();
+}
+function good(id) {
+  mode = 'good'; done++; $('count').textContent = `${done} done`;
+  goodSound();
+  if (checkMode && id) return showCheck(id);
+  screen('good', '✓', `Claim ${claimNo} done`, '', ['Scan next', () => { claimNo++; scanNext(); }]);
+}
+
+// ---- check mode: see what was read, tap anything that's wrong (for accuracy stats) ----
+let checkMode = false;
+try { checkMode = localStorage.getItem('checkMode') === '1'; } catch (e) {}
+function drawChk() { $('chk').textContent = 'Confirm: ' + (checkMode ? 'on' : 'off'); $('chk').className = checkMode ? 'on' : ''; }
+$('chk').onclick = () => { checkMode = !checkMode; try { localStorage.setItem('checkMode', checkMode ? '1' : '0'); } catch (e) {} drawChk(); };
+drawChk();
+const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+function toast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; clearTimeout(toast.t); toast.t = setTimeout(() => el.style.opacity = 0, 2200); }
+const shortD = v => /^\d\d\/\d\d\/\d{4}$/.test(v || '') ? v.slice(0, 6) + v.slice(8) : (v || '');
+function fmtDate(raw) {                       // digits only (iPhone number pad) -> MM/DD/YY as you type
+  const d = raw.replace(/\D/g, '').slice(0, 8);
+  return d.length > 4 ? d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : d;
+}
+async function showCheck(id) {
+  let fields = [];
+  try { fields = (await (await fetch('/details/' + id + location.search)).json()).fields || []; } catch (e) {}
+  const fix = {}, wrong = new Set();
+  let open = null;
+  const shown = f => !(f.field in fix) ? f.value
+    : f.kind === 'codes' ? fix[f.field].join(', ') : f.kind === 'money' ? '$' + fix[f.field] : fix[f.field];
+  const editor = f => {
+    const cur = f.field in fix ? fix[f.field] : f.raw;
+    let h = '';
+    if (f.kind === 'date') {
+      h = `<div class="chips">${(f.choices || []).map(c => `<button class="chip ${c === cur ? 'on' : ''}" data-v="${esc(c)}">${esc(shortD(c))}</button>`).join('')}</div>
+           <div class="in"><input inputmode="numeric" placeholder="MM/DD/YY" autocomplete="off"><button class="use">Use</button></div>
+           ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}`;
+    } else if (f.kind === 'codes') {
+      const sel = new Set(cur || []);
+      h = `<div class="chips">${f.choices.map(c => `<button class="chip ${sel.has(c) ? 'on' : ''}" data-code="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+           <div class="in"><button class="use" style="flex:1;padding:12px 0">Use these</button></div>`;
+    } else if (f.kind === 'pick') {
+      h = `<div class="chips">${f.choices.map(c => `<button class="chip ${c === cur ? 'on' : ''}" data-v="${esc(c)}" style="flex:1">${esc(c)}</button>`).join('')}</div>`;
+    } else {
+      h = (f.choices || []).length > 1 ? `<div class="chips">${f.choices.map(c => `<button class="chip ${c === cur ? 'on' : ''}" data-v="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : '';
+      h += `<div class="in"><input inputmode="${f.kind === 'money' ? 'decimal' : 'numeric'}" placeholder="${f.kind === 'money' ? '0.00' : 'Auth #'}" autocomplete="off"><button class="use">Use</button></div>`;
+    }
+    return `<div class="ed">${h}<button class="flag">Can't tell, flag it for eClaim</button></div>`;
+  };
+  const set = (f, v) => {
+    if (f.field === 'dependent' && v === 'Dependent' && f.raw !== 'Dependent') toast("Type the holder's DOB and sex in eClaim");
+    if (f.kind !== 'codes' && v === f.raw) delete fix[f.field]; else fix[f.field] = v;
+    wrong.delete(f.field); open = null; render();
+  };
+  const render = () => {
+    const mark = {ok: '', warn: '⚠ ', missing: '✗ '};
+    $('list').innerHTML = fields.map(f => `<div class="row ${f.flag} ${f.field in fix ? 'fixed' : ''} ${wrong.has(f.field) ? 'wrong' : ''}" data-f="${esc(f.field)}">
+        <div class="head"><span>${mark[f.flag] || ''}${esc(f.label)}</span><b>${esc((f.kind === 'date' ? shortD(shown(f)) : shown(f)) || '—')}</b></div>
+        ${open === f.field ? editor(f) : ''}</div>`).join('');
+    $('list').querySelectorAll('.row').forEach(row => {
+      const f = fields.find(x => x.field === row.dataset.f);
+      row.querySelector('.head').onclick = () => { open = open === f.field ? null : f.field; render(); };
+      const ed = row.querySelector('.ed'); if (!ed) return;
+      const inp = ed.querySelector('input');
+      if (inp && f.kind === 'date') inp.oninput = () => { inp.value = fmtDate(inp.value); };
+      ed.querySelectorAll('.chip[data-v]').forEach(c => c.onclick = () => set(f, c.dataset.v));
+      const picked = new Set((f.field in fix ? fix[f.field] : f.raw) || []);
+      ed.querySelectorAll('.chip[data-code]').forEach(c => c.onclick = () => {
+        picked.has(c.dataset.code) ? picked.delete(c.dataset.code) : picked.add(c.dataset.code); c.classList.toggle('on');
+      });
+      const use = ed.querySelector('.use');
+      if (use) use.onclick = () => {
+        if (f.kind === 'codes') return picked.size ? set(f, f.choices.filter(c => picked.has(c))) : toast('Pick at least one code');
+        const v = (inp && inp.value || '').trim();
+        if (!v) return toast('Type it in first');
+        if (f.kind === 'date' && v.replace(/\D/g, '').length < 6) return toast('Date needs MM/DD/YY');
+        set(f, f.kind === 'money' ? v.replace('$', '') : v);
+      };
+      ed.querySelector('.flag').onclick = () => { delete fix[f.field]; wrong.add(f.field); open = null; render(); };
+      if (inp && f.kind !== 'date') setTimeout(() => inp.focus(), 50);
+    });
+    const n = Object.keys(fix).length;
+    $('primary').textContent = n ? `Save ${n} fix${n > 1 ? 'es' : ''} · Scan next` : 'All correct · Scan next';
+  };
+  const next = async () => {
+    let r = {ok: true};
+    try {
+      r = await (await fetch('/check/' + id + location.search, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                           body: JSON.stringify({wrong: [...wrong], fix})})).json();
+    } catch (e) { return toast("Couldn't reach the laptop"); }
+    if (r.bad && r.bad.length) {
+      const names = r.bad.map(k => (fields.find(f => f.field === k) || {}).label || k).join(', ');
+      r.bad.forEach(k => delete fix[k]); open = r.bad[0]; render();
+      return toast(`That doesn't look right: ${names}`);
+    }
+    $('list').className = ''; $('stage').classList.remove('checking'); claimNo++; scanNext();
+  };
+  screen('good', '✓', `Claim ${claimNo}: check it against the paper`, 'Tap a field to fix it.', ['All correct · Scan next', next]);
+  $('stage').classList.add('checking');
+  $('list').className = 'on';
+  render();
+}
+function bad(id, what) {
+  mode = 'bad';
+  screen('bad', '✗', `Couldn't read ${what}`, 'Retake it, or use it anyway and type that part in eClaim.',
+         ['Retake', () => retake(id)], ['Use it anyway', () => { good(id); }]);
+  badSound();
+}
+function notForm() {
+  mode = 'bad';
+  screen('bad', '✗', 'No form found', "That didn't look like a VSP form, so nothing was added.", ['Scan again', () => retake(null)]);
+  badSound();
+}
+function duplicate(where) {
+  mode = 'bad';
+  screen('bad', '✗', 'Already scanned', where === 'billed'
+         ? 'This auth # was already billed. Not added again.' : 'This auth # is already in the queue. Not added again.',
+         ['Scan next', () => scanNext()]);
+  badSound();
+}
+
+// ---- 8.5 x 11 frame: the photo is cropped to it, so the next sheet in the stack stays out ----
+const PAGE = 8.5 / 11;
+function layoutGuide() {
+  const top = $('top').getBoundingClientRect().bottom + 4, bottom = $('bar').getBoundingClientRect().top - 8;
+  const availH = Math.max(100, bottom - top), availW = innerWidth - 24;
+  let w = Math.min(availW, availH * PAGE), h = w / PAGE;
+  guide.style.width = w + 'px'; guide.style.height = h + 'px';
+  guide.style.left = (innerWidth - w) / 2 + 'px'; guide.style.top = top + (availH - h) / 2 + 'px';
+}
+addEventListener('resize', layoutGuide); addEventListener('orientationchange', () => setTimeout(layoutGuide, 300));
+// where the frame is in the camera image (the video fills the screen with object-fit: cover)
+function frameInVideo(margin = 0) {
+  const vw = v.videoWidth, vh = v.videoHeight, r = guide.getBoundingClientRect();
+  const sc = Math.max(innerWidth / vw, innerHeight / vh), ox = (innerWidth - vw * sc) / 2, oy = (innerHeight - vh * sc) / 2;
+  let x = (r.left - ox) / sc, y = (r.top - oy) / sc, w = r.width / sc, h = r.height / sc;
+  x -= w * margin; y -= h * margin; w *= 1 + 2 * margin; h *= 1 + 2 * margin;
+  x = Math.max(0, x); y = Math.max(0, y); w = Math.min(vw - x, w); h = Math.min(vh - y, h);
+  return {x, y, w, h};
+}
+
+// ---- camera ----
+function fail(msg) { $('errmsg').innerHTML = msg; $('err').style.display = 'flex'; }
+let stream = null;
+async function camOn() {                      // camera runs only while looking for a form
+  if (stream) return true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: false,
+      video: {facingMode: {ideal: 'environment'}, width: {ideal: 3840}, height: {ideal: 2160}}});
+    v.srcObject = stream; await v.play(); prev = null; layoutGuide();
+    return true;
+  } catch (e) { fail('Camera blocked (' + e.name + ').<br>Settings &rarr; Safari &rarr; Camera &rarr; Allow, then reload.'); return false; }
+}
+function camOff() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  v.srcObject = null; prev = null;
+}
+async function start() {
+  if (!navigator.mediaDevices?.getUserMedia) return fail('Camera not available.<br>Open this page from the <b>https://</b> link, after installing the certificate.');
+  if (await camOn()) loop();
+}
+function sample() {
+  if (!stream || !v.videoWidth) return null;
+  const f = frameInVideo(), H = Math.round(W * f.h / f.w);
+  small.width = W; small.height = H;
+  sctx.drawImage(v, f.x, f.y, f.w, f.h, 0, 0, W, H);
+  const d = sctx.getImageData(0, 0, W, H).data, g = new Float32Array(W * H);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) g[j] = .299 * d[i] + .587 * d[i + 1] + .114 * d[i + 2];
+  return g;
+}
+function pageStats(g) {                      // is there a bright page with print on it in the frame?
+  const hist = new Uint32Array(256); let sum = 0; for (const x of g) { hist[x | 0]++; sum += x; }
+  let p90 = 255, acc = 0; for (let b = 255; b >= 0; b--) { acc += hist[b]; if (acc >= g.length * .1) { p90 = b; break; } }
+  const cut = Math.max(60, p90 * .7); let n = 0, ink = 0;
+  for (const x of g) { if (x > cut) n++; else if (x < p90 * .5) ink++; }
+  const paper = n / g.length, inkShare = ink / g.length, mean = sum / g.length;
+  const dark = p90 < 110 || mean < 60;                // face down, covered, or no light
+  const blank = inkShare < 0.008;                     // nothing printed on it (wall, blank sheet)
+  return {paper, inkShare, mean, p90, dark, blank, form: !dark && !blank && paper >= PAPER_MIN};
+}
+const diff = (a, b) => { if (!a || !b) return 99; let s = 0; for (let i = 0; i < a.length; i += 3) s += Math.abs(a[i] - b[i]); return s / (a.length / 3); };
+
+function loop() {
+  const g = sample();
+  if (g) {
+    const motion = diff(g, prev); prev = g;
+    const ps = pageStats(g);
+    if (mode === 'scan') {
+      if (armed && auto && ps.form && motion < STILL) still++; else still = 0;
+      guide.className = still > 0 ? 'locking' : '';
+      $('hint').textContent = !armed ? 'Get ready…' : ps.dark ? 'Too dark: point at the form'
+        : !ps.form ? 'Hold the form inside the frame' : 'Hold still…';
+      if (still >= STILL_TICKS) shoot();
+    }
+    dbg.textContent = `paper ${ps.paper.toFixed(2)} ink ${ps.inkShare.toFixed(3)} p90 ${ps.p90} mean ${ps.mean.toFixed(0)}\nmotion ${motion.toFixed(1)}  still ${still}  armed ${armed}  ${mode}`;
+  }
+  setTimeout(loop, TICK);
+}
+
+function shoot() {
+  if (mode !== 'scan') return;
+  mode = 'reading'; still = 0; armed = false;
+  $('flash').style.transition = 'none'; $('flash').style.opacity = .8;
+  requestAnimationFrame(() => { $('flash').style.transition = 'opacity .25s'; $('flash').style.opacity = 0; });
+  const f = frameInVideo(0.03);                // just the 8.5x11 frame (+3% so edges aren't clipped)
+  big.width = Math.round(f.w); big.height = Math.round(f.h);
+  bctx.drawImage(v, f.x, f.y, f.w, f.h, 0, 0, big.width, big.height);
+  camOff();                                   // camera off until Scan next / Retake
+  snapSound();
+  screen('reading', '', `Reading claim ${claimNo}…`, '');
+  const replacing = retakeOf;
+  big.toBlob(b => upload(b, replacing), 'image/jpeg', .9);
+}
+
+async function upload(blob, replacing) {
+  const fd = new FormData(); fd.append('photo', blob, 'scan.jpg');
+  const q = location.search + (replacing ? (location.search ? '&' : '?') + 'replaces=' + replacing : '');
+  let id;
+  try {
+    const r = await fetch('/upload' + q, {method: 'POST', body: fd});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    id = ((await r.json()).ids || [])[0];
+  } catch (e) {
+    mode = 'bad';
+    screen('bad', '✗', "Couldn't reach the laptop", 'Is py app.py running? Then try again.', ['Try again', () => retake(replacing)]);
+    badSound(); return;
+  }
+  check(id);
+}
+
+async function check(id) {
+  let j;
+  for (;;) {
+    try { j = await (await fetch('/status/' + id + location.search)).json(); } catch (e) { j = {status: 'processing'}; }
+    if (j.status !== 'processing') break;
+    await new Promise(r => setTimeout(r, 400));
+  }
+  if (j.status === 'duplicate') return duplicate(j.where);
+  if (j.status === 'notform' || j.status === 'gone') return notForm();
+  const missing = j.status === 'error' ? ['the page'] : (j.fields || []).filter(f => f.flag === 'missing').map(f => f.label);
+  missing.length ? bad(id, missing.join(', ')) : good(id);
+}
+
+$('snap').onclick = () => { if (mode === 'scan' && stream) { armed = true; shoot(); } };
+$('auto').onclick = () => { auto = !auto; $('auto').textContent = 'Auto: ' + (auto ? 'on' : 'off'); };
+$('top').onclick = () => { dbg.style.display = dbg.style.display === 'block' ? 'none' : 'block'; };
+header('Claim 1', 'Tap once to turn on sounds, then hold up the form');
+layoutGuide();
+start();
+</script>
+</body></html>

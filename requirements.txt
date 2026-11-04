@@ -1,0 +1,9 @@
+flask
+rapidocr_onnxruntime==1.2.3
+rapidfuzz
+pillow
+pillow-heif
+pypdfium2
+cryptography
+onnxocr-ppocrv5
+segno

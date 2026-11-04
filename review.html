@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>Claim Review</title>
+<style>
+  :root{--bg:#f8fafc;--card:#fff;--fg:#0f172a;--mute:#64748b;--line:#e2e8f0;--warn:#fef3c7;--miss:#fee2e2;--acc:#2563eb}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f172a;--card:#1e293b;--fg:#e2e8f0;--mute:#94a3b8;--line:#334155;--warn:#713f12;--miss:#7f1d1d}}
+  body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:20px}
+  h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;color:var(--mute);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.05em}
+  .card{display:flex;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  .card img{width:260px;border-radius:8px;cursor:zoom-in;object-fit:contain;align-self:flex-start}
+  .f{flex:1;display:grid;gap:10px;align-content:start}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .row>span{width:84px;color:var(--mute);font-size:13px}
+  input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);width:180px}
+  .warn{background:var(--warn)!important}.miss{background:var(--miss)!important}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
+  button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .go{background:#16a34a;color:#fff;border-color:#16a34a}.del{color:#dc2626}
+  .hint{font-size:12px;color:var(--mute)}
+  details{font-size:12px;color:var(--mute)}
+  .ready{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:6px}
+</style>
+</head><body>
+<h1>Claim review</h1>
+<div class="hint">Yellow = double-check, red = couldn't read. Approved claims show up in the eClaim panel.</div>
+<h2>To review</h2><div id="rev"></div>
+<h2>Ready to fill</h2><div id="ready"></div>
+<script>
+let codes = [], claims = [], sig = '';
+const edits = {};   // id -> {auth, dos, gender, hcodes}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const cls = f => f === 'warn' ? 'warn' : f === 'missing' ? 'miss' : '';
+const val = (c, k) => (edits[c.id] && k in edits[c.id]) ? edits[c.id][k] : (c.data[k] || {}).v;
+const flag = (c, k) => (edits[c.id] && k in edits[c.id]) ? 'ok' : (c.data[k] || {}).flag;
+const setEdit = (id, k, v) => { (edits[id] ||= {})[k] = v; render(); };
+
+async function post(url, body) {
+  await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  load(true);
+}
+
+function card(c) {
+  if (c.status === 'processing') return `<div class="card"><img src="/img/${c.id}"><div class="f">Reading…</div></div>`;
+  if (c.data.error) return `<div class="card"><img src="/img/${c.id}" onclick="open('/img/${c.id}')"><div class="f">
+    <div class="miss" style="padding:8px;border-radius:6px">OCR failed: ${esc(c.data.error)}</div>
+    <div class="row"><button class="del" onclick="post('/api/claim/${c.id}',{action:'delete'})">Delete</button></div></div></div>`;
+  const g = val(c, 'gender'), hs = val(c, 'hcodes') || [], gi = c.data.gender || {};
+  return `<div class="card"><img src="/img/${c.id}" onclick="open('/img/${c.id}')"><div class="f">
+    <div class="row"><span>Auth #</span><input class="${cls(flag(c,'auth'))}" value="${esc(val(c,'auth'))}" onchange="setEdit(${c.id},'auth',this.value)"></div>
+    <div class="row"><span>DOS</span><input class="${cls(flag(c,'dos'))}" value="${esc(val(c,'dos'))}" placeholder="MM/DD/YYYY" onchange="setEdit(${c.id},'dos',this.value)">
+      ${(c.data.dos||{}).printed ? `<span class="hint" style="width:auto">printed: ${esc(c.data.dos.printed)}</span>` : ''}</div>
+    <div class="row"><span>Copay</span><input class="${cls(flag(c,'copay'))}" value="${esc(val(c,'copay'))}" placeholder="0.00" onchange="setEdit(${c.id},'copay',this.value)"></div>
+    <div class="row"><span>Type</span>
+      ${[['Self', false], ['Dependent', true]].map(([lbl, v]) => `<button class="${!!val(c,'dependent')===v?'on':''}" onclick="setEdit(${c.id},'dependent',${v})">${lbl}</button>`).join('')}</div>
+    ${val(c,'dependent') ? `<div class="row"><span>Insured DOB</span><input class="${cls(flag(c,'insured_dob'))}" value="${esc(val(c,'insured_dob'))}" placeholder="MM/DD/YYYY" onchange="setEdit(${c.id},'insured_dob',this.value)">
+      ${(c.data.insured_dob||{}).printed ? `<span class="hint" style="width:auto">VSP: ${esc(c.data.insured_dob.printed)}</span>` : ''}</div>` : ''}
+    <div class="row"><span>Gender</span>
+      ${['M','F'].map(x => `<button class="${g===x?'on':''} ${!g||flag(c,'gender')!=='ok'?cls(flag(c,'gender')):''}" onclick="setEdit(${c.id},'gender','${x}')">${x}</button>`).join('')}
+      <span class="hint" style="width:auto">${esc(gi.name || 'no name read')}${gi.conf ? ' · ' + Math.round(gi.conf*100) + '%' : ''}</span></div>
+    <div class="row"><span>Dx</span>
+      ${codes.map(x => `<button class="${hs.includes(x)?'on':''} ${!hs.length||flag(c,'hcodes')!=='ok'?cls(flag(c,'hcodes')):''}" onclick="toggle(${c.id},'${x}')">${x}</button>`).join('')}</div>
+    <div class="row"><button class="go" onclick="approve(${c.id})">Approve</button>
+      <button class="del" onclick="post('/api/claim/${c.id}',{action:'delete'})">Delete</button></div>
+    <details><summary>What OCR saw</summary>${esc((c.data.raw||[]).join(' | '))}</details>
+  </div></div>`;
+}
+
+function toggle(id, code) {
+  const c = claims.find(x => x.id === id), cur = [...(val(c, 'hcodes') || [])];
+  const i = cur.indexOf(code); i >= 0 ? cur.splice(i, 1) : cur.push(code);
+  setEdit(id, 'hcodes', cur);
+}
+
+function approve(id) {
+  const c = claims.find(x => x.id === id);
+  const data = {auth: val(c,'auth'), dos: val(c,'dos'), gender: val(c,'gender'), hcodes: val(c,'hcodes') || [],
+                copay: val(c,'copay') || '', dependent: !!val(c,'dependent'), insured_dob: val(c,'insured_dob') || ''};
+  const missing = [!data.auth && 'auth #', !data.dos && 'DOS', !data.gender && 'gender', !data.hcodes.length && 'a Dx',
+                   data.copay === '' && 'copay (0.00 if none)', data.dependent && !data.insured_dob && 'insured DOB'].filter(Boolean);
+  if (missing.length) { alert('Still need: ' + missing.join(', ')); return; }
+  delete edits[id];
+  post(`/api/claim/${id}`, {action: 'approve', data});
+}
+
+function render() {
+  const rev = claims.filter(c => c.status !== 'ready'), rdy = claims.filter(c => c.status === 'ready');
+  document.getElementById('rev').innerHTML = rev.map(card).join('') || '<div class="hint">Nothing waiting. Scan some forms.</div>';
+  document.getElementById('ready').innerHTML = rdy.map(c => `<div class="ready">
+    <div>#${esc(c.data.auth.v)} · ${esc(c.data.dos.v)} · ${esc(c.data.gender.v)} · ${esc((c.data.hcodes.v||[]).join(', '))} · $${esc((c.data.copay||{}).v)} · ${(c.data.dependent||{}).v ? 'Dependent' : 'Self'}</div>
+    <button onclick="post('/api/claim/${c.id}',{action:'unapprove'})">Back to review</button></div>`).join('') || '<div class="hint">None yet.</div>';
+}
+
+async function load(force) {
+  try {
+    const j = await (await fetch('/api/list')).json();
+    const s = j.claims.map(c => c.id + c.status).join(',');
+    if (!force && s === sig) return;
+    sig = s; codes = j.codes; claims = j.claims;
+    if (!force && document.activeElement?.tagName === 'INPUT') return;
+    render();
+  } catch (e) {}
+}
+load(true); setInterval(load, 3000);
+</script>
+</body></html>
