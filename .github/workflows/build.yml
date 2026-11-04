@@ -20,6 +20,12 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: python -m pip install -r requirements.txt pyinstaller
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path app.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
       - name: Build
         run: pyinstaller --noconfirm ClaimScanner.spec
       - name: Smoke test (in a copy, so no test data/keys end up in the zip)
@@ -45,8 +51,12 @@ jobs:
         with:
           name: ClaimScanner-windows
           path: ClaimScanner-windows.zip
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release (every passing build of main = a download, named after VERSION in app.py)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.ver.outputs.version) }}
+          name: Claim Scanner ${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           files: ClaimScanner-windows.zip

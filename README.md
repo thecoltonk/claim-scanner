@@ -58,7 +58,7 @@ py -m pip install pyinstaller
 pyinstaller ClaimScanner.spec # -> dist/ClaimScanner/ClaimScanner.exe
 ```
 
-Pushing a tag like `v1.0` makes GitHub Actions build the Windows zip and attach it to a release.
+Every push to `main` that builds and passes the smoke test is published as a release named after `VERSION` in `app.py` (bump it to make a new one).
 
 Sex guesses use the public SSA baby-name list (downloaded on first run). If that download fails, put [names.zip](https://www.ssa.gov/oact/babynames/names.zip) next to the app.
 
