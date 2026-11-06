@@ -19,6 +19,27 @@ if FROZEN:                                            # no console window: write
         os.replace(_log, _log + ".old")
     sys.stdout = sys.stderr = open(_log, "a", buffering=1, encoding="utf-8")
 
+def full_speed():
+    """Windows 11 throttles apps with no visible window (power throttling / Efficiency mode), which made
+    reads ~3x slower as the exe than in a terminal. Opt out for this process."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        class PPTS(ctypes.Structure):
+            _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong), ("StateMask", ctypes.c_ulong)]
+        k = ctypes.windll.kernel32
+        k.GetCurrentProcess.restype = ctypes.c_void_p
+        h = ctypes.c_void_p(k.GetCurrentProcess())
+        st = PPTS(1, 0x1 | 0x4, 0)        # control EXECUTION_SPEED + timer resolution, state 0 = never throttle
+        ok = k.SetProcessInformation(h, 4, ctypes.byref(st), ctypes.sizeof(st))   # 4 = ProcessPowerThrottling
+        k.SetPriorityClass(h, 0x8000)     # ABOVE_NORMAL: keep up while you're busy in Firefox
+        print(f"  Power throttling: {'off' if ok else 'could not turn off'}")
+    except Exception as e:
+        print(f"  Power throttling: could not turn off ({e})")
+
+full_speed()
+
 def _load_config():
     """config.py next to the exe/app.py (made from config.example.py the first time)."""
     path = os.path.join(BASE, "config.py")
@@ -32,7 +53,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.2"
+VERSION = "2026-11-05.3"
 
 try:
     import pillow_heif
@@ -1319,18 +1340,26 @@ def worker():
             delete_claim(cid)
             continue
         try:
+            T, t = {}, time.time()
+            def lap(k):
+                nonlocal t
+                T[k] = round(time.time() - t, 1); t = time.time()
             h = Image.open(cl["img"]).height
-            boxes = ocr_image(cl["img"])
-            add_rereads(cl["img"], boxes, h)
-            data = parse(boxes, h)
+            boxes = ocr_image(cl["img"]); lap("read page")
+            add_rereads(cl["img"], boxes, h); lap("re-read handwriting")
+            data = parse(boxes, h); lap("parse")
             try:
                 refine(cl["img"], data)
             except Exception as e:
                 print(f"  (constrained reading skipped for scan {cid}: {type(e).__name__}: {e})")
+            lap("best fits")
             try:
                 ai_check(cl["img"], data)
             except Exception as e:
                 print(f"  (AI check skipped for scan {cid}: {type(e).__name__}: {e})")
+            lap("AI")
+            STATE["last"] = T
+            print(f"  scan {cid}: {sum(T.values()):.1f}s (" + ", ".join(f"{k} {v}s" for k, v in T.items()) + ")")
             labels_seen = sum(1 for lab in ALL_LABELS if any(label_hit(b["t"], [lab]) for b in boxes))
             if not auth_of(data) and labels_seen < 3:     # no auth # and hardly any VSP labels: not a form
                 if os.path.exists(cl["img"]):
@@ -1901,6 +1930,9 @@ def api_home():
             ["AI reader", ai, "ok" if _ai.get("model") else "warn"],
             ["Name list", f"{len(NAMES):,} names" if NAMES else "not loaded (sex can't be guessed)", "ok" if NAMES else "warn"],
             ["This PC", lan_ip(), ""]]
+    if STATE.get("last"):
+        T = STATE["last"]
+        rows.append(["Last scan", f"{sum(T.values()):.0f}s: " + ", ".join(f"{k} {v:g}s" for k, v in T.items()), ""])
     return jsonify(rows=rows, queue=n, version=VERSION)
 
 @app.get("/favicon.ico")
