@@ -39,8 +39,10 @@ jobs:
             Start-Sleep 2
             try { $r = Invoke-RestMethod http://127.0.0.1:5000/api/home; if ($r.rows[0][1] -like "ready*") { $ok = $true; break } } catch {}
           }
-          Get-Content (Join-Path $t "claim-scanner.log") -ErrorAction SilentlyContinue
+          $log = Join-Path $t "claim-scanner.log"
+          Get-Content $log -ErrorAction SilentlyContinue
           if (-not $ok) { throw "the reader didn't load" }
+          if (-not (Select-String -Path $log -Pattern "Tray icon: on" -Quiet)) { throw "the tray icon didn't start" }
           Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/quit | Out-Null
       - name: Zip
         shell: pwsh

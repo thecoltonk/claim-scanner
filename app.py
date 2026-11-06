@@ -32,7 +32,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-03.10"
+VERSION = "2026-11-05.1"
 
 try:
     import pillow_heif
@@ -1827,7 +1827,7 @@ def stats():
     return "".join(out)
 
 HOME_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Claim Scanner</title><style>
+<title>Claim Scanner</title><link rel="icon" href="/favicon.ico"><style>
 :root{--blue:#006ab6;--ink:#1f2933;--mute:#5f6b7a;--line:#d5dce4;--bg:#f3f5f8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",Roboto,Arial,sans-serif}
 header{background:var(--blue);color:#fff;padding:14px 24px;display:flex;align-items:center;gap:12px}
@@ -1844,7 +1844,7 @@ main{max-width:860px;margin:20px auto;padding:0 16px;display:grid;grid-template-
 a{color:var(--blue)}ul{margin:0;padding-left:18px}li{margin:4px 0}
 .big{font-size:28px;font-weight:700}
 </style></head><body>
-<header><h1>Claim Scanner</h1><span class="v">{version}</span><button id="quit">Quit</button></header>
+<header><img src="/favicon.ico" width="28" height="28" alt=""><h1>Claim Scanner</h1><span class="v">{version}</span><button id="quit">Quit</button></header>
 <main>
  <div>
   <div class="card"><h2>Status</h2><dl class="st" id="st"><dt>Loading…</dt><dd></dd></dl></div>
@@ -1902,6 +1902,10 @@ def api_home():
             ["Name list", f"{len(NAMES):,} names" if NAMES else "not loaded (sex can't be guessed)", "ok" if NAMES else "warn"],
             ["This PC", lan_ip(), ""]]
     return jsonify(rows=rows, queue=n, version=VERSION)
+
+@app.get("/favicon.ico")
+def favicon():
+    return send_file(os.path.join(RES, "icon.png"), mimetype="image/png")
 
 @app.get("/api/ping")
 def api_ping():
@@ -1976,6 +1980,49 @@ def ensure_certs(ip):
         open(p("server.crt"), "wb").write(crt.public_bytes(serialization.Encoding.PEM))
     return p("server.crt"), p("server.key")
 
+def start_tray(home_url):
+    """Icon by the clock (Windows): Open / Stats / Folder / Quit. It's the app's only "window"."""
+    if sys.platform != "win32" or "--no-tray" in sys.argv:
+        return
+    def run():
+        try:
+            import webbrowser
+            import pystray
+            img = Image.open(os.path.join(RES, "icon.png"))
+            def queued():
+                with db() as c:
+                    return c.execute("SELECT COUNT(*) FROM claims WHERE status IN ('ready','processing')").fetchone()[0]
+            def quit_app(icon, item):
+                icon.stop()
+                os._exit(0)
+            icon = pystray.Icon("ClaimScanner", img, "Claim Scanner", menu=pystray.Menu(
+                pystray.MenuItem("Open Claim Scanner", lambda i, it: webbrowser.open(home_url), default=True),
+                pystray.MenuItem("Accuracy stats", lambda i, it: webbrowser.open(f"http://127.0.0.1:{config.PORT}/stats")),
+                pystray.MenuItem("Open folder (settings, log)", lambda i, it: os.startfile(BASE)),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Quit", quit_app)))
+            def tip():                                # hover text: how many claims are waiting
+                while True:
+                    try:
+                        n = queued()
+                        icon.title = f"Claim Scanner: {n} claim{'s' if n != 1 else ''} waiting" if n else "Claim Scanner: queue empty"
+                    except Exception:
+                        pass
+                    time.sleep(5)
+            threading.Thread(target=tip, daemon=True).start()
+            def setup(icon):
+                icon.visible = True
+                print("  Tray icon: on (by the clock; right-click it to Quit)")
+                try:
+                    icon.notify("Running in the background. Right-click this icon by the clock to quit.", "Claim Scanner")
+                except Exception:
+                    pass
+            icon.run(setup=setup)
+        except Exception as e:
+            print(f"  Tray icon: off ({e})")
+    threading.Thread(target=run, daemon=True).start()
+
+
 if __name__ == "__main__":
     import webbrowser
     from werkzeug.serving import make_server
@@ -1997,6 +2044,7 @@ if __name__ == "__main__":
     print(f"  Phone scanner:                           https://{ip}:{HTTPS_PORT}/?k={TOKEN}")
     print(f"  Accuracy so far:                         http://localhost:{config.PORT}/stats")
     print(f"  Home page:                               {home_url}\n")
+    start_tray(home_url)
     if "--no-browser" not in sys.argv:
         threading.Timer(1.0, lambda: webbrowser.open(home_url)).start()
     app.run(host="0.0.0.0", port=config.PORT, threaded=True)

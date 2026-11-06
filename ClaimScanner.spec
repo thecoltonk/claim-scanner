@@ -1,9 +1,9 @@
 # PyInstaller build:  pyinstaller ClaimScanner.spec   ->  dist/ClaimScanner/ClaimScanner.exe
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("phone.html", "."), ("review.html", "."), ("config.example.py", ".")]
+datas = [("phone.html", "."), ("review.html", "."), ("config.example.py", "."), ("icon.png", ".")]
 binaries, hidden = [], []
-for pkg in ("rapidocr_onnxruntime", "onnxocr", "onnxruntime", "segno", "pillow_heif", "pypdfium2"):
+for pkg in ("rapidocr_onnxruntime", "onnxocr", "onnxruntime", "segno", "pillow_heif", "pypdfium2", "pystray"):
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hidden += h
 

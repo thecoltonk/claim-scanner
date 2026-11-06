@@ -7,3 +7,4 @@ pypdfium2
 cryptography
 onnxocr-ppocrv5
 segno
+pystray
