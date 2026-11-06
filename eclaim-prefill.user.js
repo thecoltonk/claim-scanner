@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         eClaim Prefill
-// @version      3.2
+// @version      3.3
 // @description  Fills the 2020source claim form from the local claim-scanner queue. Never submits.
 // @match        https://*.eyefinity.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @connect      127.0.0.1
+// @updateURL    http://127.0.0.1:5000/eclaim-prefill.user.js
+// @downloadURL  http://127.0.0.1:5000/eclaim-prefill.user.js
 // ==/UserScript==
 
 (function () {
@@ -304,6 +306,8 @@
     .links .del{color:#b3261e;margin-left:auto}
     .links button:disabled{color:#a0aab5;cursor:default;text-decoration:none}
     .msg{margin-top:8px;font-size:12px;color:#5f6b7a;min-height:16px}
+    .upd{display:block;width:100%;margin:-2px 0 10px;padding:6px 8px;border:1px solid #9cc3e6;background:#e8f1fa;color:#00559a;
+         border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;text-align:left}
     .msg.good{color:#1e7b34}.msg.bad{color:#b3261e}
     .pill{background:${BLUE};color:#fff;border:0;border-radius:999px;padding:8px 14px;font-weight:600;cursor:pointer;
           box-shadow:0 4px 14px rgba(16,42,67,.25)}
@@ -316,6 +320,10 @@
   const ui = root.getElementById('ui');
   const $ = id => root.getElementById(id);
 
+  const MINE = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0';
+  const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+  let latestScript = '';
   let claim = GM_getValue('current', null), left = null, busy = false, msg = ['', ''], armDel = 0, formSeen = 0, lastActual = null;
   const pageKind = () => document.querySelector('input[formcontrolname="cptHcpcsCode"]') ? 'form' : isSearchPage() ? 'search' : 'other';
   let page = pageKind();
@@ -379,6 +387,7 @@
       <div class="hd"><span>Claim prefill</span><span class="q">${left == null ? '' : left ? left + ' in queue' : 'queue empty'}</span>
         <button id="cp-min" title="Minimize">–</button></div>
       <div class="bd">
+        ${latestScript && newer(latestScript, MINE) ? `<button class="upd" id="cp-upd">Panel update ${esc(latestScript)} is ready: click to install</button>` : ''}
         ${c ? `${badge}<dl>
           ${row('Auth #', c.auth, lvl('auth'))}
           ${row('Patient', `${c.dependent ? 'Dependent' : 'Self'} · ${c.gender || '?'}`, lvl('dependent', 'gender'))}
@@ -405,6 +414,7 @@
         <div class="msg ${msg[1]}" id="cp-msg">${esc(msg[0])}</div>
       </div></div>`;
     $('cp-min').onclick = () => { GM_setValue('mini', true); render(); };
+    if ($('cp-upd')) $('cp-upd').onclick = () => window.open(`${API}/eclaim-prefill.user.js`, '_blank');
     $('cp-go').onclick = () => p.act && p.act();
     $('cp-view').onclick = () => c && window.open(`${API}/scan/${c.id}`, '_blank');
     if ($('cp-refill')) $('cp-refill').onclick = runFill;
@@ -495,9 +505,9 @@
     try {
       const j = await api('GET', '/api/next');
       if (!claim || (j.claim && j.claim.id === claim.id && !busy)) setClaim(j.claim);  // pick up fixes made on the phone
-      left = j.left;
+      left = j.left; latestScript = j.script_version || '';
     } catch (e) { if (!quiet) say(e.message, 'bad'); }
-    const sig = JSON.stringify([claim, left]);
+    const sig = JSON.stringify([claim, left, latestScript]);
     if (sig !== lastSig) { lastSig = sig; if (!busy) render(); }
   }
 

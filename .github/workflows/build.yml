@@ -28,28 +28,34 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
       - name: Build
         run: pyinstaller --noconfirm ClaimScanner.spec
-      - name: Smoke test (in a copy, so no test data/keys end up in the zip)
-        shell: pwsh
-        run: |
-          $t = Join-Path $env:RUNNER_TEMP "smoke"
-          Copy-Item -Recurse dist/ClaimScanner $t
-          Start-Process (Join-Path $t "ClaimScanner.exe") -ArgumentList "--no-browser"
-          $ok = $false
-          for ($i = 0; $i -lt 90; $i++) {
-            Start-Sleep 2
-            try { $r = Invoke-RestMethod http://127.0.0.1:5000/api/home; if ($r.rows[0][1] -like "ready*") { $ok = $true; break } } catch {}
-          }
-          $log = Join-Path $t "claim-scanner.log"
-          Get-Content $log -ErrorAction SilentlyContinue
-          if (-not $ok) { throw "the reader didn't load" }
-          if (-not (Select-String -Path $log -Pattern "Tray icon: on" -Quiet)) { throw "the tray icon didn't start" }
-          if (-not (Select-String -Path $log -Pattern "Power throttling: off" -Quiet)) { throw "couldn't turn off power throttling" }
-          Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/quit | Out-Null
       - name: Zip
         shell: pwsh
         run: |
           Copy-Item eclaim-prefill.user.js, README.md, LICENSE dist/ClaimScanner/
           Compress-Archive dist/ClaimScanner ClaimScanner-windows.zip
+      - name: Smoke test + self-update test (in a copy, so no test data/keys end up in the zip)
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "smoke"
+          Copy-Item -Recurse dist/ClaimScanner $t
+          $env:CLAIMSCANNER_UPDATE_ZIP = (Resolve-Path ClaimScanner-windows.zip).Path
+          Start-Process (Join-Path $t "ClaimScanner.exe") -ArgumentList "--no-browser"
+          $log = Join-Path $t "claim-scanner.log"
+          function Ready { try { $r = Invoke-RestMethod http://127.0.0.1:5000/api/home; return ($r.rows[0][1] -like "ready*") } catch { return $false } }
+          $ok = $false; for ($i = 0; $i -lt 90; $i++) { Start-Sleep 2; if (Ready) { $ok = $true; break } }
+          Get-Content $log -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "the reader didn't load" }
+          if (-not (Select-String -Path $log -Pattern "Tray icon: on" -Quiet)) { throw "the tray icon didn't start" }
+          if (-not (Select-String -Path $log -Pattern "Power throttling: off" -Quiet)) { throw "couldn't turn off power throttling" }
+          $tok = Get-Content (Join-Path $t "token.txt")
+          Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/update | Out-Null
+          $back = $false; Start-Sleep 5
+          for ($i = 0; $i -lt 90; $i++) { Start-Sleep 2; if ((Ready) -and (Select-String -Path $log -Pattern "Updated to" -Quiet)) { $back = $true; break } }
+          Get-Content $log -Tail 15
+          if (-not $back) { throw "self-update didn't restart the app" }
+          if ((Get-Content (Join-Path $t "token.txt")) -ne $tok) { throw "self-update changed the user's token" }
+          if (-not (Test-Path (Join-Path $t "config.py"))) { throw "self-update lost config.py" }
+          Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/quit | Out-Null
       - uses: actions/upload-artifact@v4
         with:
           name: ClaimScanner-windows

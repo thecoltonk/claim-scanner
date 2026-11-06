@@ -1,7 +1,7 @@
 """Claim scanner: phone snaps auth forms -> local OCR -> review queue -> eClaim userscript fills.
 Everything stays on this laptop. Run: python app.py
 """
-import functools, importlib.util, io, json, os, queue, re, secrets, shutil, socket, sqlite3, sys, threading, time, urllib.request, zipfile
+import functools, importlib.util, io, json, os, queue, re, secrets, shutil, socket, sqlite3, subprocess, sys, threading, time, urllib.request, zipfile
 from datetime import datetime, timedelta
 
 from flask import Flask, Response, abort, jsonify, make_response, redirect, request, send_file
@@ -53,7 +53,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.4"
+VERSION = "2026-11-05.5"
 
 try:
     import pillow_heif
@@ -1391,6 +1391,88 @@ with db() as c:   # finish scans that were mid-read when the app closed; claims 
         c.execute("UPDATE claims SET status='processing', data='{}' WHERE id=?", (r["id"],))
         jobs.put(r["id"])
 
+
+# ---------------- self-update (Windows exe) ----------------
+REPO = "thecoltonk/claim-scanner"
+UPD = {"state": "", "latest": "", "url": "", "msg": ""}   # state: "" | available | current | downloading | installing | error
+
+def _vtuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+def check_update():
+    """Ask GitHub for the newest release (just a version number; nothing about you or your claims is sent)."""
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                     headers={"User-Agent": "ClaimScanner", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rel = json.loads(r.read())
+        asset = next((a for a in rel.get("assets", []) if a["name"].endswith(".zip")), None)
+        UPD["latest"] = rel.get("tag_name", "").lstrip("v")
+        UPD["url"] = asset["browser_download_url"] if asset else ""
+        if UPD["state"] in ("", "current", "available", "error"):
+            UPD["state"] = "available" if asset and _vtuple(UPD["latest"]) > _vtuple(VERSION) else "current"
+        if UPD["state"] == "available":
+            print(f"  Update available: {UPD['latest']}")
+    except Exception as e:
+        print(f"  (couldn't check for updates: {e})")
+
+def _updater_loop():
+    time.sleep(5)
+    while True:
+        check_update()
+        time.sleep(6 * 3600)
+
+def install_update(zip_path=None):
+    """Download the new zip, unpack it beside the app, and hand off to a tiny script that waits for this app
+    to close, copies the new program files over the old ones (your config, queue, certs stay), and restarts it."""
+    if not FROZEN or sys.platform != "win32":
+        UPD.update(state="error", msg="Self-update only works in the Windows app. From source: download the new files.")
+        return
+    try:
+        stage = os.path.join(BASE, "_update")
+        shutil.rmtree(stage, ignore_errors=True)
+        os.makedirs(stage)
+        if not zip_path:
+            UPD.update(state="downloading", msg="Downloading… 0%")
+            zip_path = os.path.join(stage, "new.zip")
+            req = urllib.request.Request(UPD["url"], headers={"User-Agent": "ClaimScanner"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(zip_path, "wb") as out:
+                total, got = int(r.headers.get("Content-Length") or 0), 0
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk); got += len(chunk)
+                    if total:
+                        UPD["msg"] = f"Downloading… {got * 100 // total}%"
+        UPD.update(state="installing", msg="Unpacking…")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(os.path.join(stage, "new"))
+        src = os.path.join(stage, "new", "ClaimScanner")
+        if not os.path.exists(os.path.join(src, "ClaimScanner.exe")):
+            raise RuntimeError("the download doesn't look like Claim Scanner")
+        exe = os.path.join(BASE, "ClaimScanner.exe")
+        script = os.path.join(stage, "update.cmd")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(f"""@echo off
+:wait
+tasklist /FI "PID eq {os.getpid()}" 2>nul | find "{os.getpid()}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+robocopy "{src}\\_internal" "{BASE}\\_internal" /MIR /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+robocopy "{src}" "{BASE}" ClaimScanner.exe eclaim-prefill.user.js README.md LICENSE /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+start "" "{exe}" --no-browser --updated
+""")
+        subprocess.Popen(["cmd.exe", "/c", script], creationflags=0x08000000 | 0x00000200,   # no window, own group
+                         close_fds=True, cwd=stage)
+        UPD.update(msg="Restarting…")
+        print("  Installing update and restarting")
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+    except Exception as e:
+        UPD.update(state="error", msg=f"Update failed: {e}")
+        print(f"  Update failed: {e}")
+
+if FROZEN and "--no-update-check" not in sys.argv:
+    threading.Thread(target=_updater_loop, daemon=True).start()
+
 # ---------------- routes ----------------
 def local_only(fn):
     @functools.wraps(fn)
@@ -1719,7 +1801,7 @@ def api_next():
         r = c.execute("SELECT * FROM claims WHERE status='ready' ORDER BY created, id LIMIT 1").fetchone()
         left = c.execute("SELECT COUNT(*) FROM claims WHERE status IN ('ready','processing')").fetchone()[0]
     if not r:
-        return jsonify(claim=None, left=left, app_version=VERSION)
+        return jsonify(claim=None, left=left, app_version=VERSION, script_version=SCRIPT_VERSION)
     d = row_dict(r)["data"]
     g = lambda k, dflt="": (d.get(k) or {}).get("v", dflt)
     labels = {"auth": "Auth #", "dependent": "Self or Dependent", "dos": "Date of service", "gender": "Sex", "hcodes": "Dx", "copay": "Copay"}
@@ -1744,7 +1826,7 @@ def api_next():
                           "choices": ((d.get(k) or {}).get("ctc") or {}).get("top", [])})
     if d.get("confirmed"):                            # you checked everything against the paper on the phone
         check = [x for x in check if x["level"] == "missing"]
-    return jsonify(left=left, app_version=VERSION, claim={"id": r["id"], "confirmed": bool(d.get("confirmed")), "check": check, "auth": g("auth"), "dos": g("dos"), "gender": g("gender"),
+    return jsonify(left=left, app_version=VERSION, script_version=SCRIPT_VERSION, claim={"id": r["id"], "confirmed": bool(d.get("confirmed")), "check": check, "auth": g("auth"), "dos": g("dos"), "gender": g("gender"),
                           "hcodes": g("hcodes", []), "copay": g("copay"), "dependent": bool(g("dependent", False)),
                           "insured_dob": g("insured_dob"), "insured_gender": g("insured_gender"), "cpt": config.CPT_LINES,
                           "npi": getattr(config, "RENDERING_NPI", ""), "tax_id_type": getattr(config, "TAX_ID_TYPE", "EIN")})
@@ -1881,15 +1963,21 @@ main{max-width:860px;margin:20px auto;padding:0 16px;display:grid;grid-template-
 .m{color:var(--mute);font-size:13px;word-break:break-all}
 a{color:var(--blue)}ul{margin:0;padding-left:18px}li{margin:4px 0}
 .big{font-size:28px;font-weight:700}
+#upd{display:none;background:#e8f1fa;border:1px solid #9cc3e6;border-radius:6px;padding:12px 16px;margin-bottom:16px;align-items:center;gap:12px}
+#upd.on{display:flex}#upd b{flex:1}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:4px;padding:8px 16px;font:inherit;font-weight:600;cursor:pointer}
+.btn:disabled{background:#9fb3c8;cursor:default}
 </style></head><body>
 <header><img src="/favicon.ico" width="28" height="28" alt=""><h1>Claim Scanner</h1><span class="v">{version}</span><button id="quit">Quit</button></header>
 <main>
  <div>
+  <div id="upd"><b id="updt"></b><button class="btn" id="updb">Update now</button></div>
   <div class="card"><h2>Status</h2><dl class="st" id="st"><dt>Loading…</dt><dd></dd></dl></div>
   <div class="card" style="margin-top:16px"><h2>Queue</h2><div class="big" id="q">–</div><div class="m">claims waiting for eClaim</div></div>
   <div class="card" style="margin-top:16px"><h2>Links</h2><ul>
    <li><a href="/stats" target="_blank">Accuracy stats</a></li>
    <li><a href="/review" target="_blank">Review queue</a></li>
+   <li><a href="/eclaim-prefill.user.js">Install / update the eClaim panel</a> <span class="m">(open in Firefox with Tampermonkey)</span></li>
    <li>Settings: <span class="m">{folder}config.py</span> (edit, then Quit and reopen)</li>
    <li>Log: <span class="m">{folder}claim-scanner.log</span></li></ul></div>
  </div>
@@ -1905,10 +1993,24 @@ async function tick() {
     const j = await (await fetch('/api/home')).json();
     $('st').innerHTML = j.rows.map(([k, v, c]) => `<dt>${esc(k)}</dt><dd class="${c}">${esc(v)}</dd>`).join('');
     $('q').textContent = j.queue;
-  } catch (e) { $('st').innerHTML = '<dt>App</dt><dd class="bad">not running</dd>'; }
+    const u = j.update || {};
+    if (window.ver && window.ver !== j.version) location.reload();      // came back after an update
+    window.ver = j.version;
+    $('upd').className = ['available', 'downloading', 'installing', 'error'].includes(u.state) ? 'on' : '';
+    $('updt').textContent = u.state === 'available' ? `Update available: ${u.latest}` : u.msg || '';
+    $('updb').style.display = u.state === 'available' || u.state === 'error' ? '' : 'none';
+    $('updb').textContent = u.state === 'error' ? 'Try again' : 'Update now';
+  } catch (e) {
+    $('st').innerHTML = window.updating ? '<dt>App</dt><dd class="warn">restarting with the update…</dd>' : '<dt>App</dt><dd class="bad">not running</dd>';
+  }
 }
+$('updb').onclick = async () => {
+  $('updb').disabled = true; window.updating = true;
+  await fetch('/api/update', {method: 'POST'}).catch(() => {});
+  setTimeout(() => $('updb').disabled = false, 3000); tick();
+};
 $('quit').onclick = async () => { await fetch('/api/quit', {method: 'POST'}).catch(() => {}); document.body.innerHTML = '<p style="padding:24px">Claim Scanner is closed. You can close this tab.</p>'; };
-tick(); setInterval(tick, 3000);
+tick(); setInterval(tick, 2000);
 </script></body></html>"""
 
 def _qr_svg(url):
@@ -1942,7 +2044,33 @@ def api_home():
     if STATE.get("last"):
         T = STATE["last"]
         rows.append(["Last scan", f"{sum(T.values()):.0f}s: " + ", ".join(f"{k} {v:g}s" for k, v in T.items()), ""])
-    return jsonify(rows=rows, queue=n, version=VERSION)
+    return jsonify(rows=rows, queue=n, version=VERSION, update=UPD)
+
+@app.post("/api/update")
+@local_only
+def api_update():
+    if UPD["state"] in ("downloading", "installing"):
+        return jsonify(ok=True)
+    test_zip = os.environ.get("CLAIMSCANNER_UPDATE_ZIP")      # (build check: install a local zip)
+    if not test_zip and UPD["state"] != "available":
+        check_update()
+        if UPD["state"] != "available":
+            return jsonify(ok=False, msg="Already up to date")
+    threading.Thread(target=install_update, args=(test_zip,), daemon=True).start()
+    return jsonify(ok=True)
+
+def _script_version():
+    try:
+        m = re.search(r"@version\s+(\S+)", open(os.path.join(RES, "eclaim-prefill.user.js"), encoding="utf-8").read(4000))
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+SCRIPT_VERSION = _script_version()
+
+@app.get("/eclaim-prefill.user.js")
+def userscript():
+    """The eClaim panel that matches this version of the app. Tampermonkey checks here for updates."""
+    return send_file(os.path.join(RES, "eclaim-prefill.user.js"), mimetype="text/javascript", max_age=0)
 
 @app.get("/favicon.ico")
 def favicon():
@@ -2040,6 +2168,9 @@ def start_tray(home_url):
                 pystray.MenuItem("Open Claim Scanner", lambda i, it: webbrowser.open(home_url), default=True),
                 pystray.MenuItem("Accuracy stats", lambda i, it: webbrowser.open(f"http://127.0.0.1:{config.PORT}/stats")),
                 pystray.MenuItem("Open folder (settings, log)", lambda i, it: os.startfile(BASE)),
+                pystray.MenuItem(lambda it: f"Install update ({UPD['latest']})",
+                                 lambda i, it: threading.Thread(target=install_update, daemon=True).start(),
+                                 visible=lambda it: UPD["state"] == "available"),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", quit_app)))
             def tip():                                # hover text: how many claims are waiting
@@ -2047,9 +2178,14 @@ def start_tray(home_url):
                     try:
                         n = queued()
                         icon.title = f"Claim Scanner: {n} claim{'s' if n != 1 else ''} waiting" if n else "Claim Scanner: queue empty"
+                        if UPD["state"] == "available" and not tip.told:
+                            tip.told = True
+                            icon.update_menu()
+                            icon.notify(f"Update {UPD['latest']} is ready. Open Claim Scanner and click Update now.", "Claim Scanner")
                     except Exception:
                         pass
                     time.sleep(5)
+            tip.told = False
             threading.Thread(target=tip, daemon=True).start()
             def setup(icon):
                 icon.visible = True
@@ -2085,6 +2221,8 @@ if __name__ == "__main__":
     print(f"  Phone scanner:                           https://{ip}:{HTTPS_PORT}/?k={TOKEN}")
     print(f"  Accuracy so far:                         http://localhost:{config.PORT}/stats")
     print(f"  Home page:                               {home_url}\n")
+    if "--updated" in sys.argv:
+        print(f"  Updated to {VERSION}")
     start_tray(home_url)
     if "--no-browser" not in sys.argv:
         threading.Timer(1.0, lambda: webbrowser.open(home_url)).start()

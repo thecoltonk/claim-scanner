@@ -20,9 +20,11 @@ Fields it's sure about get a ✓. Anything it isn't sure about gets ⚠, with a 
 4. **Phone (one time):** scan the QR code on the home page with the iPhone camera. Then:
    - install the certificate, and turn on trust for it under Settings → General → About → Certificate Trust Settings;
    - open the scanner and Share → **Add to Home Screen**.
-5. **Firefox (one time):** install [Tampermonkey](https://www.tampermonkey.net/), click *Create a new script*, paste in `eclaim-prefill.user.js`, and save.
+5. **Firefox (one time):** install [Tampermonkey](https://www.tampermonkey.net/), then on the home page click **Install / update the eClaim panel** and confirm.
 
-Your data (`config.py`, `claims.db`, `certs/`, `token.txt`, the log) lives next to the exe. To update, unzip the new version over the old one.
+Your data (`config.py`, `claims.db`, `certs/`, `token.txt`, the log) lives next to the exe.
+
+**Updates:** when there's a new version, the home page shows **Update now** (and the tray icon offers it). It downloads, swaps the program files, and restarts; your data stays. The eClaim panel updates itself from the app (Tampermonkey), or click the link in the panel when it says an update is ready.
 
 ## Billing a stack
 
