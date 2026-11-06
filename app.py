@@ -1,7 +1,7 @@
 """Claim scanner: phone snaps auth forms -> local OCR -> review queue -> eClaim userscript fills.
 Everything stays on this laptop. Run: python app.py
 """
-import functools, importlib.util, io, json, os, queue, re, secrets, shutil, socket, sqlite3, subprocess, sys, threading, time, urllib.request, zipfile
+import copy, functools, importlib.util, io, json, os, queue, re, secrets, shutil, socket, sqlite3, subprocess, sys, threading, time, urllib.request, zipfile
 from datetime import datetime, timedelta
 
 from flask import Flask, Response, abort, jsonify, make_response, redirect, request, send_file
@@ -53,7 +53,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.5"
+VERSION = "2026-11-05.6"
 
 try:
     import pillow_heif
@@ -193,6 +193,7 @@ def get_ocr():
     except Exception as e:
         _ocr_err = f"{type(e).__name__}: {e}"
         raise
+    _ocr.use_angle_cls = False                        # photos are always upright; skip the per-line rotation check
     global READER
     READER = upgrade_reader(_ocr)
     try:                                              # speed-up; RapidOCR versions name this part differently
@@ -293,8 +294,8 @@ def reread(img, b, digits=False):
     otsu = cv2.threshold(flat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     variants = [crop, cv2.createCLAHE(2.0, (8, 8)).apply(g), flat, otsu, cv2.erode(otsu, np.ones((2, 2), np.uint8))]
     heights = (48, 64, 96)
-    if HW_REC is not None:                            # PP-OCRv5 needs fewer tries (and each one costs more)
-        variants, heights = variants[:3], (48, 64)
+    if HW_REC is not None:                            # PP-OCRv5 needs fewer tries (and each one costs more);
+        variants, heights = variants[:3], (48,)       # it scales every crop to 48px tall, so other heights were repeats
     imgs = []
     for v in variants:
         v = v if v.ndim == 3 else cv2.cvtColor(v, cv2.COLOR_GRAY2BGR)
@@ -993,7 +994,7 @@ def line_probs(img, box):
         variants += [crop, cv2.cvtColor(cv2.divide(g, cv2.GaussianBlur(g, (0, 0), 25), scale=255), cv2.COLOR_GRAY2BGR)]
     out = []
     for v in variants:
-        for hh in (48, 64):
+        for hh in (48,):                              # (the reader scales to 48px itself; 64 was a near-repeat)
           for sx in (1.0, 2.0):                         # also stretched 2x wide: more reading steps per digit
             sc = hh / v.shape[0]
             im = cv2.resize(v, (max(8, int(v.shape[1] * sc * sx)), hh), interpolation=cv2.INTER_CUBIC)
@@ -1154,10 +1155,22 @@ def ai_ready():
 
 _last_ai = {"text": ""}
 
+AI_CACHE = {}                                         # (prompt, image) -> answer, for the claim being read
+
 def ai_read(im, prompt):
-    import base64
+    import base64, hashlib
     buf = io.BytesIO()
     im.convert("RGB").save(buf, "JPEG", quality=92)
+    key = (prompt, hashlib.sha1(buf.getvalue()).hexdigest())
+    if key in AI_CACHE:                               # already asked (while the laptop was busy)
+        _last_ai["text"], ans = AI_CACHE[key]
+        return ans
+    ans = _ai_ask(buf, prompt)
+    AI_CACHE[key] = (_last_ai["text"], ans)
+    return ans
+
+def _ai_ask(buf, prompt):
+    import base64
     b64 = base64.b64encode(buf.getvalue()).decode()
     try:
         out = ai_call("/v1/chat/completions", {
@@ -1328,6 +1341,13 @@ def ai_check(path, data):
 
 # ---------------- background OCR worker ----------------
 STATE = {"ocr": "loading"}
+
+import logging
+class _QuietPolling(logging.Filter):                  # keep the log readable: skip the every-second status checks
+    def filter(self, r):
+        m = r.getMessage()
+        return not any(p in m for p in ("/api/home", "/status/", "/api/next", "/api/crop/", "/favicon"))
+logging.getLogger("werkzeug").addFilter(_QuietPolling())
 jobs = queue.Queue()
 
 def worker():
@@ -1357,11 +1377,15 @@ def worker():
             boxes = ocr_image(cl["img"]); lap("read page")
             add_rereads(cl["img"], boxes, h); lap("re-read handwriting")
             data = parse(boxes, h); lap("parse")
+            AI_CACHE.clear()                          # ask the AI now, in parallel with the best-fit step below;
+            pre = threading.Thread(target=_ai_prefetch, args=(cl["img"], copy.deepcopy(data)), daemon=True)
+            pre.start()                               # (same crops + questions, so ai_check later finds the answers ready)
             try:
                 refine(cl["img"], data)
             except Exception as e:
                 print(f"  (constrained reading skipped for scan {cid}: {type(e).__name__}: {e})")
             lap("best fits")
+            pre.join(timeout=120)
             try:
                 ai_check(cl["img"], data)
             except Exception as e:
@@ -1384,6 +1408,12 @@ def worker():
                 update(cid, status="ready", data=data)   # straight to the eClaim queue
         except Exception as e:
             update(cid, status="error", data={"error": f"{type(e).__name__}: {e}"})
+
+def _ai_prefetch(path, data):
+    try:
+        ai_check(path, data)
+    except Exception:
+        pass
 
 threading.Thread(target=worker, daemon=True).start()
 with db() as c:   # finish scans that were mid-read when the app closed; claims already read (and any phone fixes) stay as they are
