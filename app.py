@@ -32,7 +32,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.1"
+VERSION = "2026-11-05.2"
 
 try:
     import pillow_heif
@@ -1348,8 +1348,8 @@ def worker():
             update(cid, status="error", data={"error": f"{type(e).__name__}: {e}"})
 
 threading.Thread(target=worker, daemon=True).start()
-with db() as c:                                       # re-read everything still queued with the current code
-    for r in c.execute("SELECT id FROM claims WHERE status IN ('processing','ready','error') ORDER BY id").fetchall():
+with db() as c:   # finish scans that were mid-read when the app closed; claims already read (and any phone fixes) stay as they are
+    for r in c.execute("SELECT id FROM claims WHERE status IN ('processing','error') ORDER BY id").fetchall():
         c.execute("UPDATE claims SET status='processing', data='{}' WHERE id=?", (r["id"],))
         jobs.put(r["id"])
 
