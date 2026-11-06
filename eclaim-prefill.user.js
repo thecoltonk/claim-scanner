@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         eClaim Prefill
-// @version      3.1
+// @version      3.2
 // @description  Fills the 2020source claim form from the local claim-scanner queue. Never submits.
 // @match        https://*.eyefinity.com/*
 // @grant        GM_xmlhttpRequest
@@ -390,7 +390,7 @@
         ${checks.map(x => `<div class="ck ${x.level}"><div class="t">${x.level === 'missing' ? '✗' : '⚠'} ${esc(x.text)}</div>
           ${x.crop ? `<canvas data-field="${esc(x.field)}" class="wait"></canvas>` : ''}
           ${(x.choices || []).length > 1 ? `<div class="chips">${x.choices.map(v => {
-            const on = (x.field === 'hcodes' ? (c.hcodes || []).join(' + ') : c[x.field]) === v;
+            const on = (x.field === 'hcodes' ? (c.hcodes || []).join(' + ') : x.field === 'dependent' ? (c.dependent ? 'Dependent' : 'Self') : c[x.field]) === v;
             return `<button class="chip ${on ? 'on' : ''}" data-pick="${esc(x.field)}" data-val="${esc(v)}">${esc(short(v))}</button>`;
           }).join('')}</div>` : ''}</div>`).join('')}
         ${page === 'form' && !filled() && searched && searched !== c.id ? '<div class="note">This form is from a different search. Check the auth #.</div>' : ''}`
@@ -417,7 +417,9 @@
   // ⚠ choice buttons: use that answer, and put it straight into eClaim if the form is open
   function choose(field, val) {
     const c = claim; if (!c) return;
-    if (field === 'hcodes') c.hcodes = val.split(' + '); else c[field] = val;
+    if (field === 'hcodes') c.hcodes = val.split(' + ');
+    else if (field === 'dependent') c.dependent = val === 'Dependent';
+    else c[field] = val;
     const p = GM_getValue('picks', null);
     const vals = p && p.id === c.id ? p.vals : {};
     vals[field] = c[field]; GM_setValue('picks', { id: c.id, vals }); GM_setValue('current', c);
@@ -440,7 +442,7 @@
         el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur();
       }
     }
-    say(`Using ${short(val)}` + (put ? ' (updated in the form).' : '.'), 'good');
+    say(`Using ${short(val)}` + (put ? ' (updated in the form).' : field === 'dependent' ? '. Fill (again) to use it.' : '.'), 'good');
     render();
   }
 

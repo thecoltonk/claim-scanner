@@ -53,7 +53,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.3"
+VERSION = "2026-11-05.4"
 
 try:
     import pillow_heif
@@ -525,13 +525,22 @@ def glued_dob(rest, pm, py):
 def guess_insured(boxes):
     """Member Name row present = dependent. Insured DOB = staff's handwritten MM/DD/YY on that row,
     checked against VSP's printed month/year (which also settles the century)."""
+    cy = lambda b: (b["y1"] + b["y2"]) / 2
     mem = label_boxes(boxes, MEMBER_LABELS)
+    n_dob = len({id(b): b for b, _, _ in label_boxes(boxes, DOB_LABELS)})
+    # Two signals: a "Member Name" row, and two Birth Date lines (patient's + holder's). A ✓ needs both to agree.
+    # (One dependent was billed as Self with a ✓ because the Member Name label didn't read.)
+    choices = {"top": ["Dependent", "Self"]}
     if not mem:
-        return {"v": False, "flag": "ok"}, {"v": "", "flag": "ok"}
-    mb = mem[0][0]
+        if n_dob < 2:
+            return {"v": False, "flag": "ok"}, {"v": "", "flag": "ok"}
+        mb = sorted({id(b): b for b, _, _ in label_boxes(boxes, DOB_LABELS)}.values(), key=cy)[-1]   # the holder's line
+        dep_flag = "warn"
+    else:
+        mb = mem[0][0]
+        dep_flag = "ok" if n_dob >= 2 else "warn"
     lh = max(mb["y2"] - mb["y1"], 1)
     row_y = (mb["y1"] + mb["y2"]) / 2
-    cy = lambda b: (b["y1"] + b["y2"]) / 2
     # The member's Birth Date: VSP prints the patient's Birth Date first and the member's below it.
     # (Long names wrap, so "closest to the Member Name label" can land on the patient's line.)
     all_dobs = sorted({id(b): b for b, _, _ in label_boxes(boxes, DOB_LABELS)}.values(), key=cy)
@@ -574,7 +583,7 @@ def guess_insured(boxes):
             if score < best:
                 hand, best = (hm, hd, int(ys)), score
 
-    dep = {"v": True, "flag": "ok"}
+    dep = {"v": True, "flag": dep_flag, **({"ctc": choices} if dep_flag != "ok" else {})}
     hint = f"{pm:02d}/??/{py}" if pm else ""
     line = [b for b in near if -0.6 * lh <= cy(b) - anchor_y <= 1.7 * lh
             and (MONTH_YEAR.search(b["t"]) or sum(ch.isdigit() for ch in b["t"]) >= 3)]
@@ -1713,7 +1722,7 @@ def api_next():
         return jsonify(claim=None, left=left, app_version=VERSION)
     d = row_dict(r)["data"]
     g = lambda k, dflt="": (d.get(k) or {}).get("v", dflt)
-    labels = {"auth": "Auth #", "dos": "Date of service", "gender": "Sex", "hcodes": "Dx", "copay": "Copay"}
+    labels = {"auth": "Auth #", "dependent": "Self or Dependent", "dos": "Date of service", "gender": "Sex", "hcodes": "Dx", "copay": "Copay"}
     if g("dependent", False):
         labels["insured_dob"] = "Insured DOB"
         labels["insured_gender"] = "Insured sex"
