@@ -53,7 +53,7 @@ def _load_config():
 
 config = _load_config()
 
-VERSION = "2026-11-05.6"
+VERSION = "2026-11-10.1"
 
 try:
     import pillow_heif
@@ -79,6 +79,7 @@ TOKEN = open(TOKEN_FILE).read().strip()
 def db():
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA secure_delete=ON")             # deleted claims get zeroed in the file, not just unlinked
     return c
 
 with db() as c:
@@ -86,6 +87,9 @@ with db() as c:
               " created REAL, status TEXT, img TEXT, data TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS billed (auth TEXT PRIMARY KEY, at REAL)")   # auth #s already billed
     c.execute("DELETE FROM billed WHERE at < ?", (time.time() - 180 * 86400,))       # keep ~6 months
+c = db()
+c.execute("VACUUM")                                   # one-time scrub of anything deleted before secure_delete was on
+c.close()
 
 def row_dict(r):
     return {"id": r["id"], "created": r["created"], "status": r["status"], "img": r["img"],
@@ -109,6 +113,29 @@ def delete_claim(cid):
         os.remove(cl["img"])
     with db() as c:
         c.execute("DELETE FROM claims WHERE id=?", (cid,))
+
+ERROR_KEEP_DAYS = 7                                   # failed scans (photo kept for a retake) are purged after this
+
+def purge_old():
+    """Drop failed scans and leftover duplicate/not-a-form rows so patient photos don't pile up."""
+    now = time.time()
+    with db() as c:
+        old = [r["id"] for r in c.execute(
+            "SELECT id FROM claims WHERE (status='error' AND created < ?) OR "
+            "(status IN ('duplicate', 'notform') AND created < ?)", (now - ERROR_KEEP_DAYS * 86400, now - 86400))]
+    for cid in old:
+        delete_claim(cid)
+    return len(old)
+
+def _purge_loop():
+    while True:
+        try:
+            n = purge_old()
+            if n:
+                print(f"  Purged {n} old failed scan(s)")
+        except Exception as e:
+            print(f"  (purge skipped: {type(e).__name__}: {e})")
+        time.sleep(3600)
 
 def auth_of(data):
     return re.sub(r"\D", "", ((data or {}).get("auth") or {}).get("v", "") or "")
@@ -1416,6 +1443,7 @@ def _ai_prefetch(path, data):
         pass
 
 threading.Thread(target=worker, daemon=True).start()
+threading.Thread(target=_purge_loop, daemon=True).start()
 with db() as c:   # finish scans that were mid-read when the app closed; claims already read (and any phone fixes) stay as they are
     for r in c.execute("SELECT id FROM claims WHERE status IN ('processing','error') ORDER BY id").fetchall():
         c.execute("UPDATE claims SET status='processing', data='{}' WHERE id=?", (r["id"],))
